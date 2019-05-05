@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html>
+<head>
+<html><head>
+<script async src="https://www.googletagmanager.com/gtag/js?id=UA-139594119-2"></script>
+        <script>
+        window.dataLayer = window.dataLayer || [];
+        function gtag(){dataLayer.push(arguments);}
+        gtag('js', new Date());
+
+        gtag('config', 'UA-139594119-2');
+        </script>
+        </head></html>
+<title>How does synchronisation work?</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link href="https://use.fontawesome.com/releases/v5.8.1/css/all.css" rel="stylesheet" charset="utf-8">
+<link href="https://cdn.jsdelivr.net/npm/katex@0.10.1/dist/katex.min.css" rel="stylesheet" charset="utf-8">
+<script src="https://cdn.jsdelivr.net/npm/katex@0.10.1/dist/katex.min.js" charset="utf-8"></script><link href="post.css" rel="stylesheet" charset="utf-8">
+<script src="post.js" charset="utf-8"></script>
+</head>
+<body>
+<div class="control"><a href="/"><i class="fas fa-home"></i> home</a></div>
+<h1 class="title">How does synchronisation work?</h1>
+<div class="doc">
+        <p>
+            One of the most interesting parts in concurrency programming is to do with synchronisation. Sychronisation is necessary because we need to avoid <i>race conditions</i>, so let's first review what race condition is.
+        </p>
+
+        <h2>Race conditions</h2>
+
+        <p>
+            For multitasking to work on limited CPU resources, the operating system needs to frequently switch in and out processes. The scheduling deployed by operating system is <i>preemptive</i>, which is determined by hardware interrupt. When a clock interrupt occurs, operating system is notifed and puts a running process into waiting list, then schedules a different waiting process to run. This procedure is called a <i>context switch</i>. The result of this is we don't have control on when and how long each process runs, thus code on different threads can be executed in any order.
+        </p>
+
+        <p>
+            This can become a problem when atomic operation is broken. One example is two processes updating a data structure at the same time. In the middle of an update operation, the data structure is usually in an inconsistent state. If a second update to the sharing data structure invoked by a different process occurs at this point, we will face undefined behaviour as the preconditions of the update operation are not met. This is why the bug is called a race condition, as we have two processes racing with each other under no control. <i>Synchronisation</i> basically is the mechanisms to put process execution order back to control.
+        </p>
+
+        <h2>Critical region</h2>
+
+        <p>
+            To avoid racing condition bugs, people have come up with the idea of <i>critical region</i>. It is a code region where at any time only one process can be in. If we can implement critical region correctly, in theory we can eliminate race conditions by forcing any read/write on shared resources as critical region, because each critical region becomes effectively an atomic operation.
+        </p>
+
+        <p>
+            The basic strategy to implement critical region is to have two function calls <code>enter_critical</code> and <code>leave_critical</code> that guard the code region that we want to protect. When multiple processes reach <code>enter_critical</code> call, only one process can successfully enter the region, all other processes need to wait there. And only when the process in the critical region finishes <code>leave_critical</code> call can other processes start to enter the region (and again only one of them can enter the region successfully).
+        </p>
+
+        <p>
+            Let's first consider a simple but incorrect implementation of this behaviour:
+        </p>
+
+        <pre><code class="code-block">var occupied = false&#13;
+&#13;
+func enter_critical()&#13;
+  for occupied&#13;
+    ;&#13;
+  occupied = true&#13;
+&#13;
+func leave_critical()&#13;
+  occupied = false</code></pre>
+
+        <p>
+            The <code>enter_critical</code> call contains a loop that repeatedly tests if the region is <code>occupied</code>. Once the region is not occupied, it breaks out of the loop and set the <code>occupied</code> to <code>true</code> indicating the critical region is now occupied by the calling process. Once the process exits the region, it sets <code>occupied</code> to <code>false</code> so that other processes blocked by the loop in <code>enter_critical</code> can now enter the critical region.
+        </p>
+
+        <p>
+            Use a variable to represent if the region is occupied is a good idea, but since variable inspection and update is non-atomic at hardware instruction level, we can have a context switch between the two operations and the problem is not really solved. Consider the case where two processes both trying to enter the critical region that is not occupied. One process tests the <code>occupied</code> is <code>false</code> and breaks out of the loop, then a context switch happens and another process tests the <code>occupied</code> is <code>false</code> and breaks from the loop as well. We will then eventually have two processes setting <code>occupied</code> to true and both in the critical region.
+        </p>
+
+        <p>
+            It feels we need another critical region guard for reading and writing <code>occupied</code> in order to implement the original critical region we wanted to implement! To solve the problem, we will need some help from hardware. In some architecture, we have the <code>xchg</code> instruction (and other similar instructions) that can exchange a piece of memory and a register <b>atomically</b>. We can not define <code>enter_critical</code> and <code>leave_critical</code> with this instruction. Below is the pseudo-code:
+        </p>
+
+        <pre><code class="code-block">var occupied = false&#13;
+&#13;
+func enter_critical()&#13;
+  for true&#13;
+    var local_occupied = true&#13;
+    xchg(local_occupied, occupied)&#13;
+    if !local_occupied&#13;
+      break&#13;
+&#13;
+func leave_critical()&#13;
+  var local_occupied = false&#13;
+  xchg(local_occupied, occupied)</code></pre>
+
+        <p>
+            Here when entering the critical region, the <code>occupied</code> is set to <code>true</code> by <code>xchg</code> instruction, and at the same time the old value stored in <code>occupied</code> is read into <code>local_occupied</code>, all done atomically. The result of this atomicity is that if <code>occupied</code> ever becomes <code>false</code>, that <code>false</code> will only be picked up by one process. Because when that <code>false</code> is picked up, <code>occupied</code> is also set to <code>true</code>. The critical region problem is thus solved.
+        </p>
+
+        <p>
+            There are also other algorithm for critical region problem. One (unpleasant) way is to disable clock interrupts upon entering the critical region, this means we stop context switches to happen. It is also possible to implement with software only, the algorithm is called <a href="https://en.wikipedia.org/wiki/Peterson%27s_algorithm">Peterson's algorithm</a>.
+        </p>
+
+        <h2>Semaphore and mutex</h2>
+
+        <p>
+            One drawback of the previous algorithm is that it performs a <i>busy waiting</i> loop to block a process, and this wastes precious CPU resources. A more efficient way is to put a process into sleep when it's blocked and wake it up when it becomes unblocked. Another restriction of the algorithm is that we only allow one process into the critical region, but sometimes it may be fine to allow multiple processes into the critical region. Semaphore is basically the combination of these two ideas.
+        </p>
+
+        <p>
+            A semaphore keeps track of a non-negative number which indicates how many more processes are allowed to pass the semaphore entry guard. It has two operations <code>down</code> and <code>up</code> that resemble <code>enter_critical</code> and <code>leave_critical</code> respectively. <code>down</code> operation decrements the number. When the number is already zero, which indicates no more process can pass, we instead put the process into sleep and add it to the semaphore's waiting queue. <code>up</code> operation increments the number. When the number is zero and the waiting queue is not empty, we wake up one process from the waiting queue and remove it from the queue. After being waken up, the process will try to re-enter the critical region (and try to pass the semaphore again). Of course, the semaphore needs to update its number and waiting queue atomically, therefore an algorithm for critical region needs to be used.
+        </p>
+
+        <p>
+            The simplest semaphore is a semaphore initialised with one, which behaves the same as what <code>enter_critical</code> and <code>leave_critical</code> did. It provides mutual exclusive access to the code in critical region, hence it is called a <i>mutex</i>, or simply a <i>lock</i>. We will call the <code>down</code> and <code>up</code> operations on mutex <code>lock</code> and <code>unlock</code> respectively.
+        </p>
+
+        <p>
+            A classic problem solved by semaphore is <a href="https://en.wikipedia.org/wiki/Producer%E2%80%93consumer_problem"><i>producer-consumer problem</i></a>. In the problem we have a queue with finite size. Process <code>producer</code> sits in an infinite loop and add things to the queue. Process <code>consumer</code> sits in an infinite loop and remove things from the queue. There are unknown number of producers and consumers. Below is the semaphore solution to model it:
+        </p>
+
+        <pre><code class="code-block">var queue = create_queue(n)&#13;
+var empty = create_sema(n)&#13;
+var full = create_sema(0)&#13;
+var mutex = create_mutex()&#13;
+&#13;
+func producer()&#13;
+  for true&#13;
+    down(empty)&#13;
+    lock(mutex)&#13;
+&#13;
+    var thing = produce_thing()&#13;
+    queue.add(thing)&#13;
+&#13;
+    unlock(mutex)&#13;
+    up(full)&#13;
+&#13;
+func consumer()&#13;
+  for true&#13;
+    down(full)&#13;
+    lock(mutex)&#13;
+&#13;
+    var thing = queue.remove()&#13;
+    consume_thing(thing)&#13;
+&#13;
+    unlock(mutex)&#13;
+    up(empty)</code></pre>
+
+        <p>
+            We have two blocks of synchronisation operations. First the inner <code>mutex</code> that provides atomic update to the shared queue. The outer block consists of an interplay between two semaphores <code>empty</code> and <code>full</code>, which captures the condition of emptiness and fullness, respectively. A producer can continue to add to the queue only when there is still some emptiness, while a consumer can continue to remove from the queue only when there is still some fullness. A producer once added a thing to the queue, it increases the fullness of the queue. Similarly the consumer increases the emptiness.
+        </p>
+
+        <h2>Condition and monitor</h2>
+
+        <p>
+            In the previous example, semaphores are used to encode the condition of whether the queue is empty or full. As you may find, using semaphore arithmetics to express such conditions is rather unintuitive. Take a step back, what we really want to achieve is to aquire a mutex conditionally, and sleep when we cannot aquire the mutex. Note there are some caveats. First, because the condition we want to express also needs to inspect the sharing data, we must test the condition while we are <b>in</b> the critical region. Second, when the condition is not met, we must release the mutex before we go sleep, otherwise other processes cannot enter the critical region. Third, when the process is waken up, the first thing it must do is to reaquire the mutex before it can try entering the critical region again.
+        </p>
+
+        <p>
+            These types of conditional mutex operation turns out to be useful enough enough that people give an abstraction to it. A <i>condition variable</i> is something a process can wait on, and can be signaled to wake up while it is waiting. It is designed to be used together with mutex to address the three caveats above. <code>wait(cond, mutex)</code> makes the calling process sleep and start to wait on the condition, it takes a <code>mutex</code> as parameter becuase the calling process needs to release the mutex before it is put to sleep. <code>signal(cond)</code> wakes up a process waiting on the condition, and that process will try to reaquire the mutex. Below is an implementation of producer-consumer problem using condition variables and mutex.
+        </p>
+
+        <pre><code class="code-block">var queue = create_queue(n)&#13;
+var full = create_cond()&#13;
+var empty = create_cond()&#13;
+var mutex = create_mutex()&#13;
+&#13;
+func producer()&#13;
+  for true&#13;
+    lock(mutex)&#13;
+&#13;
+    while queue.full()&#13;
+      wait(full, mutex)&#13;
+&#13;
+    var thing = produce_thing()&#13;
+    queue.add(thing)&#13;
+&#13;
+    signal(empty)&#13;
+    unlock(mutex)&#13;
+&#13;
+func consumer()&#13;
+  for true&#13;
+    lock(mutex)&#13;
+&#13;
+    while queue.empty()&#13;
+      wait(empty, mutex)&#13;
+&#13;
+    var thing = queue.remove()&#13;
+    consume_thing(thing)&#13;
+&#13;
+    signal(full)&#13;
+    unlock(mutex)</code></pre>
+
+        <p>
+            One thing to note is that, the <code>wait</code> call is guarded by a <code>while</code> block rather than <code>if</code> block. The reason is that there is no compulsory requirements on when <code>signal</code> can be called, therefore a process can be waken up but the code condition still false. This is why we need to recheck the condition after we reaquire the lock.
+        </p>
+
+        <p>
+            Hopefully you find this solution is cleaner. The combination of mutex and condition variables used in this way is called a <i>monitor</i>. Intuitively, a monitor is like a mutex-protected code region with yield points, defined by <code>wait</code> call.
+        </p>
+    </div>
+<hr class="doc-end">
+<p class="date">Written on 2019-05-03</p>
+</body>
+</html>
